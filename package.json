@@ -1,0 +1,44 @@
+{
+  "name": "appointment-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "install-aws": "powershell -ExecutionPolicy Bypass -File install-aws-clean.ps1",
+    "build": "tsc",
+    "start": "npm run build && serverless offline start",
+    "deploy": "npm run build && serverless deploy",
+    "deploy:prod": "npm run build && serverless deploy --stage prod",
+    "deploy-verify": "powershell -ExecutionPolicy Bypass -File deploy-and-verify.ps1",
+    "verify-aws": "powershell -ExecutionPolicy Bypass -File verify-aws-dashboard.ps1",
+    "remove": "serverless remove",
+    "logs": "serverless logs -f",
+    "info": "serverless info",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:endpoints": "powershell -Command \"& { Write-Host 'Testing endpoints...' -ForegroundColor Green; $url = (sls info --verbose | Select-String 'endpoint:').ToString().Split(' ')[-1].Trim(); Write-Host \"API URL: $url\" -ForegroundColor Yellow; try { $health = Invoke-RestMethod -Uri \"$url/hello\"; Write-Host \"Health Check: $($health.message)\" -ForegroundColor Green } catch { Write-Host \"Health Check failed\" -ForegroundColor Red }; try { $aws = Invoke-RestMethod -Uri \"$url/aws-health\"; Write-Host \"AWS Health: $($aws.status)\" -ForegroundColor Green } catch { Write-Host \"AWS Health failed\" -ForegroundColor Red } }\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "uuid": "^10.0.0",
+    "zod": "^3.23.8",
+    "aws-lambda": "^1.0.7",
+    "swagger-ui-express": "^5.0.1",
+    "swagger-jsdoc": "^6.2.8"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.152",
+    "@types/node": "^24.5.2",
+    "@types/uuid": "^10.0.0",
+    "@types/swagger-ui-express": "^4.1.6",
+    "@types/swagger-jsdoc": "^6.0.4",
+    "serverless": "^4.19.1",
+    "serverless-offline": "^14.1.1",
+    "serverless-webpack": "^5.14.2",
+    "ts-loader": "^9.5.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2",
+    "webpack": "^5.94.0"
+  }
+}
