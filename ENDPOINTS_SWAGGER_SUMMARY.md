@@ -252,3 +252,36 @@ curl http://localhost:3000/hello
 ```
 
 **🎉 ¡Tu API con Swagger está lista para usar!** 🚀
+
+## 🖥️ Pasos para macOS
+
+1. Instala dependencias:
+   ```bash
+   npm install
+   ```
+
+2. Instala AWS CLI:
+   ```bash
+   ./install-aws-macos.sh
+   ```
+
+3. Configura credenciales AWS:
+   ```bash
+   aws configure
+   ```
+
+4. Compila y ejecuta localmente:
+   ```bash
+   npm run build
+   npm start
+   ```
+
+5. Despliega a AWS:
+   ```bash
+   npm run deploy
+   ```
+
+6. Verifica endpoints:
+   ```bash
+   ./test_endpoints_macos.sh
+   ```

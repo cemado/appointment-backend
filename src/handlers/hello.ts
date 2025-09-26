@@ -1,6 +1,8 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { successResponse } from '../utils/response';
 
+const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
+
 export const handler = async (
   event: APIGatewayProxyEvent
 ): Promise<APIGatewayProxyResult> => {
@@ -10,8 +12,8 @@ export const handler = async (
       timestamp: new Date().toISOString(),
       version: '2.0.0',
       documentation: {
-        swagger: 'http://localhost:3000/docs',
-        openapi: 'http://localhost:3000/api-docs.json'
+        swagger: `${API_BASE_URL}/docs`,
+        openapi: `${API_BASE_URL}/api-docs.json`
       },
       endpoints: {
         appointments: {

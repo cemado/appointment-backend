@@ -1,4 +1,5 @@
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { API_BASE_URL } from '../commons/constants';
 
 // Configuración de Swagger/OpenAPI
 const swaggerDocument = {
@@ -14,8 +15,8 @@ const swaggerDocument = {
   },
   servers: [
     {
-      url: 'http://localhost:3000',
-      description: 'Servidor de desarrollo local'
+      url: API_BASE_URL,
+      description: 'Servidor base configurado por entorno'
     }
   ],
   tags: [

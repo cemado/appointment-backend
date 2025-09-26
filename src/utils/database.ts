@@ -1,4 +1,10 @@
 import { v4 as uuidv4 } from 'uuid';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { AWS_REGION } from '../commons/constants';
+
+const client = new DynamoDBClient({ region: AWS_REGION });
+export const ddbDocClient = DynamoDBDocumentClient.from(client);
 
 export interface DatabaseInterface {
   create<T>(table: string, item: T): Promise<T>;

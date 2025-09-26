@@ -321,3 +321,142 @@ AWS_ACCESS_KEY_ID=your-access-key
 AWS_SECRET_ACCESS_KEY=your-secret-key
 AWS_DEFAULT_REGION=us-east-1
 ```
+
+## 🖥️ Pasos para macOS
+
+> Si usas macOS, sigue estos pasos para instalar, configurar y probar el proyecto usando los nuevos scripts `.sh`:
+
+1. **Instala dependencias:**
+   ```bash
+   npm install
+   ```
+
+2. **Instala AWS CLI:**
+   ```bash
+   ./install-aws-macos.sh
+   ```
+
+3. **Configura credenciales AWS:**
+   ```bash
+   aws configure
+   ```
+
+4. **Compila y ejecuta localmente:**
+   ```bash
+   npm run build
+   npm start
+   ```
+
+5. **Despliega a AWS:**
+   ```bash
+   npm run deploy
+   ```
+
+6. **Verifica endpoints locales:**
+   ```bash
+   ./test_endpoints_macos.sh
+   ```
+
+7. **Despliega y verifica en AWS:**
+   ```bash
+   ./deploy-and-verify-macos.sh
+   ```
+
+8. **Abre el dashboard de AWS en tu navegador:**
+   ```bash
+   ./verify-aws-dashboard-macos.sh
+   ```
+
+> Todos los scripts `.sh` están en la raíz del proyecto. Recuerda darles permisos de ejecución si es necesario:
+> ```bash
+> chmod +x *.sh
+> ```
+
+---
+
+# 📑 Paginación real en el endpoint de listado de citas (`/appointments`)
+
+## ¿Cómo funciona la paginación real con DynamoDB?
+
+La paginación en DynamoDB se realiza usando el parámetro `lastKey` en la consulta y el valor `nextKey` que devuelve la respuesta. Esto permite obtener los siguientes resultados de manera eficiente, incluso con grandes volúmenes de datos.
+
+---
+
+## 🔎 Parámetros soportados
+
+- **Filtros:**  
+  Puedes filtrar por cualquiera de estos campos usando parámetros de consulta:
+  - `doctorName`
+  - `patientEmail`
+  - `status`
+  - `appointmentDate`
+  - `priority`
+  - `appointmentType`
+
+- **Paginación:**  
+  - `limit`: Número máximo de citas por página (ejemplo: `limit=10`)
+  - `lastKey`: Token para obtener la siguiente página (lo obtienes de la respuesta anterior)
+
+---
+
+## 🚀 Ejemplo de uso
+
+### 1. **Primera consulta (sin paginación):**
+
+```sh
+curl "http://localhost:3000/appointments?limit=5&doctorName=Dr.%20Mar%C3%ADa%20Garc%C3%ADa"
+```
+
+**Respuesta:**
+```json
+{
+  "appointments": [ ... ],
+  "count": 5,
+  "nextKey": "eyJpZCI6ImFwcG9pbnRtZW50LTIwMjUxMjE1LTEwMDAifQ==",
+  "filters": { ... },
+  "limit": 5
+}
+```
+
+### 2. **Consulta de la siguiente página:**
+
+Toma el valor de `nextKey` y úsalo como parámetro `lastKey` en la siguiente consulta:
+
+```sh
+curl "http://localhost:3000/appointments?limit=5&doctorName=Dr.%20Mar%C3%ADa%20Garc%C3%ADa&lastKey=eyJpZCI6ImFwcG9pbnRtZW50LTIwMjUxMjE1LTEwMDAifQ=="
+```
+
+---
+
+## ℹ️ Notas importantes
+
+- Si la respuesta incluye `nextKey`, significa que hay más resultados disponibles.
+- Si no se incluye `nextKey`, has llegado al final de los resultados.
+- Puedes combinar paginación y filtros en la misma consulta.
+- El valor de `lastKey` debe ser exactamente el que recibiste en el campo `nextKey` de la respuesta anterior.
+
+---
+
+## 🧑‍💻 Ejemplo completo con filtros y paginación
+
+```sh
+curl "http://localhost:3000/appointments?limit=10&status=scheduled&priority=high"
+```
+
+Para la siguiente página, usa el `nextKey` recibido:
+
+```sh
+curl "http://localhost:3000/appointments?limit=10&status=scheduled&priority=high&lastKey=VALOR_DEL_NEXTKEY"
+```
+
+---
+
+## ✅ Ventajas
+
+- Escalable para grandes volúmenes de datos.
+- Compatible con cualquier filtro soportado.
+- No requiere cargar todos los datos en memoria.
+
+---
+
+¿Tienes dudas sobre cómo usar la paginación? ¡Consulta este documento o pregunta al equipo de desarrollo!

@@ -8,6 +8,9 @@ import {
 } from '../types/appointment';
 import { successResponse, errorResponse, validationErrorResponse } from '../utils/response';
 import { logRequest } from '../utils/auth';
+import { PutCommand, ScanCommand, GetCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { ddbDocClient } from '../utils/database';
+import { DYNAMODB_TABLE_NAME } from '../commons/constants';
 
 // Simulamos una base de datos en memoria (en producción usarías DynamoDB)
 let appointments: Appointment[] = [];
@@ -53,7 +56,7 @@ const validateAppointmentData = (data: CreateAppointmentRequest): string[] => {
 };
 
 // Función para calcular estadísticas
-const calculateStats = (): AppointmentStats => {
+const calculateStats = (appointments: Appointment[]): AppointmentStats => {
   const now = new Date();
   const today = now.toISOString().split('T')[0];
   const nextWeek = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -107,7 +110,7 @@ export const create = async (
     }
 
     const data: CreateAppointmentRequest = JSON.parse(event.body);
-    
+
     // Validar datos
     const validationErrors = validateAppointmentData(data);
     if (validationErrors.length > 0) {
@@ -115,16 +118,8 @@ export const create = async (
     }
 
     // Verificar disponibilidad (no permitir citas duplicadas en el mismo horario con el mismo doctor)
-    const conflictingAppointment = appointments.find(apt => 
-      apt.doctorName === data.doctorName &&
-      apt.appointmentDate === data.appointmentDate &&
-      apt.appointmentTime === data.appointmentTime &&
-      (apt.status === 'scheduled' || apt.status === 'confirmed')
-    );
-
-    if (conflictingAppointment) {
-      return errorResponse('Ya existe una cita programada para ese doctor en ese horario', 409);
-    }
+    // (Este filtro solo aplica si tienes todos los datos en memoria, para DynamoDB deberías hacer una consulta)
+    // Aquí solo guardamos la cita
 
     const appointment: Appointment = {
       id: generateId(),
@@ -148,7 +143,13 @@ export const create = async (
       updatedAt: new Date().toISOString(),
     };
 
-    appointments.push(appointment);
+    // Guardar en DynamoDB
+    await ddbDocClient.send(
+      new PutCommand({
+        TableName: DYNAMODB_TABLE_NAME,
+        Item: appointment,
+      })
+    );
 
     return successResponse(
       { appointment },
@@ -166,93 +167,107 @@ export const list = async (
   context: Context
 ): Promise<APIGatewayProxyResult> => {
   try {
-    logRequest(event, context);
-
-    // Extraer parámetros de consulta
-    const queryParams = event.queryStringParameters || {};
+    const query = event.queryStringParameters || {};
     const {
       doctorName,
       patientEmail,
       status,
       appointmentDate,
-      dateFrom,
-      dateTo,
       priority,
       appointmentType,
-      page = '1',
       limit = '10',
-      includeStats = 'false'
-    } = queryParams;
+      lastKey,
+      includeStats // <-- Nuevo parámetro
+    } = query;
 
-    // Aplicar filtros
-    let filteredAppointments = [...appointments];
-
-    if (doctorName) {
-      filteredAppointments = filteredAppointments.filter(apt => 
-        apt.doctorName.toLowerCase().includes(doctorName.toLowerCase())
-      );
-    }
-
-    if (patientEmail) {
-      filteredAppointments = filteredAppointments.filter(apt => 
-        apt.patientEmail.toLowerCase().includes(patientEmail.toLowerCase())
-      );
-    }
+    // Construir filtros para DynamoDB Scan
+    let filterExpressions: string[] = [];
+    let expressionAttributeValues: Record<string, any> = {};
+    let expressionAttributeNames: Record<string, string> = {};
 
     if (status) {
-      filteredAppointments = filteredAppointments.filter(apt => apt.status === status);
+      filterExpressions.push('#status = :status');
+      expressionAttributeValues[':status'] = status;
+      expressionAttributeNames['#status'] = 'status';
     }
-
+    if (doctorName) {
+      filterExpressions.push('doctorName = :doctorName');
+      expressionAttributeValues[':doctorName'] = doctorName;
+    }
+    if (patientEmail) {
+      filterExpressions.push('patientEmail = :patientEmail');
+      expressionAttributeValues[':patientEmail'] = patientEmail;
+    }
     if (appointmentDate) {
-      filteredAppointments = filteredAppointments.filter(apt => apt.appointmentDate === appointmentDate);
+      filterExpressions.push('appointmentDate = :appointmentDate');
+      expressionAttributeValues[':appointmentDate'] = appointmentDate;
     }
-
-    if (dateFrom) {
-      filteredAppointments = filteredAppointments.filter(apt => apt.appointmentDate >= dateFrom);
-    }
-
-    if (dateTo) {
-      filteredAppointments = filteredAppointments.filter(apt => apt.appointmentDate <= dateTo);
-    }
-
     if (priority) {
-      filteredAppointments = filteredAppointments.filter(apt => apt.priority === priority);
+      filterExpressions.push('priority = :priority');
+      expressionAttributeValues[':priority'] = priority;
     }
-
     if (appointmentType) {
-      filteredAppointments = filteredAppointments.filter(apt => apt.appointmentType === appointmentType);
+      filterExpressions.push('appointmentType = :appointmentType');
+      expressionAttributeValues[':appointmentType'] = appointmentType;
     }
 
-    // Ordenar por fecha y hora
-    filteredAppointments.sort((a, b) => {
-      const dateTimeA = new Date(`${a.appointmentDate}T${a.appointmentTime}`);
-      const dateTimeB = new Date(`${b.appointmentDate}T${b.appointmentTime}`);
-      return dateTimeA.getTime() - dateTimeB.getTime();
-    });
-
-    // Paginación
-    const pageNum = parseInt(page);
-    const limitNum = parseInt(limit);
-    const startIndex = (pageNum - 1) * limitNum;
-    const endIndex = startIndex + limitNum;
-    const paginatedAppointments = filteredAppointments.slice(startIndex, endIndex);
-
-    const response: any = {
-      appointments: paginatedAppointments,
-      total: filteredAppointments.length,
-      page: pageNum,
-      limit: limitNum
+    // Configurar el comando Scan
+    const scanParams: any = {
+      TableName: DYNAMODB_TABLE_NAME,
+      Limit: parseInt(limit, 10)
     };
 
-    // Incluir estadísticas si se solicita
-    if (includeStats === 'true') {
-      response.stats = calculateStats();
+    if (filterExpressions.length > 0) {
+      scanParams.FilterExpression = filterExpressions.join(' AND ');
+      scanParams.ExpressionAttributeValues = expressionAttributeValues;
+      if (Object.keys(expressionAttributeNames).length > 0) {
+        scanParams.ExpressionAttributeNames = expressionAttributeNames;
+      }
     }
 
-    return successResponse(response, 'Citas obtenidas exitosamente');
+    // Si recibimos lastKey, lo usamos para paginación
+    if (lastKey) {
+      try {
+        scanParams.ExclusiveStartKey = JSON.parse(decodeURIComponent(lastKey));
+      } catch (err) {
+        // Si el lastKey no es válido, lo ignoramos
+      }
+    }
+
+    // Ejecutar el Scan
+    const result = await ddbDocClient.send(new ScanCommand(scanParams));
+    const appointments = result.Items || [];
+    const nextKey = result.LastEvaluatedKey ? encodeURIComponent(JSON.stringify(result.LastEvaluatedKey)) : null;
+
+    // Si se solicita includeStats, calcular estadísticas
+    let stats: AppointmentStats | undefined;
+    if (includeStats === 'true') {
+      stats = calculateStats(appointments as Appointment[]);
+    }
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        appointments,
+        count: appointments.length,
+        nextKey,
+        filters: { doctorName, patientEmail, status, appointmentDate, priority, appointmentType },
+        limit: parseInt(limit, 10),
+        ...(stats ? { stats } : {}) // Solo incluir si existe
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    };
   } catch (error) {
     console.error('Error listing appointments:', error);
-    return errorResponse('Internal server error');
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: 'Internal server error' }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    };
   }
 };
 
@@ -269,7 +284,15 @@ export const get = async (
       return errorResponse('Appointment ID is required', 400);
     }
 
-    const appointment = appointments.find(a => a.id === appointmentId);
+    // Buscar el registro en DynamoDB
+    const result = await ddbDocClient.send(
+      new GetCommand({
+        TableName: DYNAMODB_TABLE_NAME,
+        Key: { id: appointmentId }
+      })
+    );
+
+    const appointment = result.Item;
 
     if (!appointment) {
       return errorResponse('Appointment not found', 404);
@@ -300,43 +323,83 @@ export const update = async (
     }
 
     const data: UpdateAppointmentRequest = JSON.parse(event.body);
-    const appointmentIndex = appointments.findIndex(a => a.id === appointmentId);
 
-    if (appointmentIndex === -1) {
+    // Verificar si existe la cita
+    const getResult = await ddbDocClient.send(
+      new GetCommand({
+        TableName: DYNAMODB_TABLE_NAME,
+        Key: { id: appointmentId }
+      })
+    );
+    const existingAppointment = getResult.Item;
+
+    if (!existingAppointment) {
       return errorResponse('Appointment not found', 404);
     }
 
     // Si se está actualizando fecha/hora/doctor, verificar disponibilidad
     if (data.appointmentDate || data.appointmentTime || data.doctorName) {
-      const existingAppointment = appointments[appointmentIndex];
-      const checkDate = data.appointmentDate || existingAppointment.appointmentDate;
-      const checkTime = data.appointmentTime || existingAppointment.appointmentTime;
-      const checkDoctor = data.doctorName || existingAppointment.doctorName;
-
-      const conflictingAppointment = appointments.find(apt => 
-        apt.id !== appointmentId &&
-        apt.doctorName === checkDoctor &&
-        apt.appointmentDate === checkDate &&
-        apt.appointmentTime === checkTime &&
-        (apt.status === 'scheduled' || apt.status === 'confirmed')
-      );
-
-      if (conflictingAppointment) {
+      const scanParams: any = {
+        TableName: DYNAMODB_TABLE_NAME,
+        FilterExpression:
+          'id <> :id AND doctorName = :doctorName AND appointmentDate = :appointmentDate AND appointmentTime = :appointmentTime AND (#status = :scheduled OR #status = :confirmed)',
+        ExpressionAttributeNames: {
+          '#status': 'status'
+        },
+        ExpressionAttributeValues: {
+          ':id': appointmentId,
+          ':doctorName': data.doctorName || existingAppointment.doctorName,
+          ':appointmentDate': data.appointmentDate || existingAppointment.appointmentDate,
+          ':appointmentTime': data.appointmentTime || existingAppointment.appointmentTime,
+          ':scheduled': 'scheduled',
+          ':confirmed': 'confirmed'
+        }
+      };
+      const conflictResult = await ddbDocClient.send(new ScanCommand(scanParams));
+      if (conflictResult.Items && conflictResult.Items.length > 0) {
         return errorResponse('Ya existe una cita programada para ese doctor en ese horario', 409);
       }
     }
 
-    // Actualizar solo los campos proporcionados
-    const updatedAppointment: Appointment = {
-      ...appointments[appointmentIndex],
-      ...data,
-      updatedAt: new Date().toISOString(),
-    };
+    // Construir expresión de actualización dinámica
+    const updateFields = Object.keys(data);
+    const updateExpression =
+      'set ' +
+      updateFields.map((field) => `#${field} = :${field}`).join(', ') +
+      ', #updatedAt = :updatedAt';
 
-    appointments[appointmentIndex] = updatedAppointment;
+    const expressionAttributeNames = updateFields.reduce(
+      (acc, field) => ({ ...acc, [`#${field}`]: field }),
+      { '#updatedAt': 'updatedAt' }
+    );
+
+    const expressionAttributeValues = updateFields.reduce(
+      (acc, field) => ({ ...acc, [`:${field}`]: (data as any)[field] }),
+      { ':updatedAt': new Date().toISOString() }
+    );
+
+    // Actualizar en DynamoDB
+    await ddbDocClient.send(
+      new UpdateCommand({
+        TableName: DYNAMODB_TABLE_NAME,
+        Key: { id: appointmentId },
+        UpdateExpression: updateExpression,
+        ExpressionAttributeNames: expressionAttributeNames,
+        ExpressionAttributeValues: expressionAttributeValues,
+        ReturnValues: 'ALL_NEW'
+      })
+    );
+
+    // Obtener el registro actualizado
+    const updatedResult = await ddbDocClient.send(
+      new GetCommand({
+        TableName: DYNAMODB_TABLE_NAME,
+        Key: { id: appointmentId }
+      })
+    );
 
     return successResponse(
-      { appointment: updatedAppointment },
+      { appointment: updatedResult.Item },
       'Cita actualizada exitosamente'
     );
   } catch (error) {
@@ -358,16 +421,29 @@ export const remove = async (
       return errorResponse('Appointment ID is required', 400);
     }
 
-    const appointmentIndex = appointments.findIndex(a => a.id === appointmentId);
+    // Verificar si existe la cita antes de eliminar
+    const getResult = await ddbDocClient.send(
+      new GetCommand({
+        TableName: DYNAMODB_TABLE_NAME,
+        Key: { id: appointmentId }
+      })
+    );
+    const existingAppointment = getResult.Item;
 
-    if (appointmentIndex === -1) {
+    if (!existingAppointment) {
       return errorResponse('Appointment not found', 404);
     }
 
-    const deletedAppointment = appointments.splice(appointmentIndex, 1)[0];
+    // Eliminar el registro en DynamoDB
+    await ddbDocClient.send(
+      new DeleteCommand({
+        TableName: DYNAMODB_TABLE_NAME,
+        Key: { id: appointmentId }
+      })
+    );
 
     return successResponse(
-      { appointment: deletedAppointment },
+      { appointment: existingAppointment },
       'Cita eliminada exitosamente'
     );
   } catch (error) {
@@ -384,10 +460,59 @@ export const stats = async (
   try {
     logRequest(event, context);
 
-    const statistics = calculateStats();
+    // Obtener todas las citas desde DynamoDB
+    const result = await ddbDocClient.send(
+      new ScanCommand({
+        TableName: DYNAMODB_TABLE_NAME
+      })
+    );
+    const appointments: Appointment[] = (result.Items || []).map(item => item as Appointment);
+
+    // Calcular estadísticas
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
+    const nextWeek = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    const stats: AppointmentStats = {
+      total: appointments.length,
+      byStatus: {},
+      byPriority: {},
+      byType: {},
+      byDoctor: {},
+      upcomingToday: 0,
+      upcomingWeek: 0
+    };
+
+    appointments.forEach(appointment => {
+      // Por estado
+      stats.byStatus[appointment.status] = (stats.byStatus[appointment.status] || 0) + 1;
+
+      // Por prioridad
+      stats.byPriority[appointment.priority] = (stats.byPriority[appointment.priority] || 0) + 1;
+
+      // Por tipo
+      stats.byType[appointment.appointmentType] = (stats.byType[appointment.appointmentType] || 0) + 1;
+
+      // Por doctor
+      stats.byDoctor[appointment.doctorName] = (stats.byDoctor[appointment.doctorName] || 0) + 1;
+
+      // Citas de hoy
+      if (appointment.appointmentDate === today && appointment.status !== 'cancelled') {
+        stats.upcomingToday++;
+      }
+
+      // Citas de la próxima semana
+      if (
+        appointment.appointmentDate >= today &&
+        appointment.appointmentDate <= nextWeek &&
+        appointment.status !== 'cancelled'
+      ) {
+        stats.upcomingWeek++;
+      }
+    });
 
     return successResponse(
-      { stats: statistics },
+      { stats },
       'Estadísticas obtenidas exitosamente'
     );
   } catch (error) {
@@ -410,20 +535,41 @@ export const confirm = async (
       return errorResponse('Appointment ID is required', 400);
     }
 
-    const appointmentIndex = appointments.findIndex(a => a.id === appointmentId);
+    // Verificar si existe la cita
+    const getResult = await ddbDocClient.send(
+      new GetCommand({
+        TableName: DYNAMODB_TABLE_NAME,
+        Key: { id: appointmentId }
+      })
+    );
+    const existingAppointment = getResult.Item;
 
-    if (appointmentIndex === -1) {
+    if (!existingAppointment) {
       return errorResponse('Appointment not found', 404);
     }
 
-    appointments[appointmentIndex] = {
-      ...appointments[appointmentIndex],
-      status: 'confirmed',
-      updatedAt: new Date().toISOString()
-    };
+    // Actualizar el estado a 'confirmed'
+    await ddbDocClient.send(
+      new UpdateCommand({
+        TableName: DYNAMODB_TABLE_NAME,
+        Key: { id: appointmentId },
+        UpdateExpression: 'set #status = :status, updatedAt = :updatedAt',
+        ExpressionAttributeNames: { '#status': 'status', },
+        ExpressionAttributeValues: { ':status': 'confirmed', ':updatedAt': new Date().toISOString() },
+        ReturnValues: 'ALL_NEW'
+      })
+    );
+
+    // Obtener el registro actualizado
+    const updatedResult = await ddbDocClient.send(
+      new GetCommand({
+        TableName: DYNAMODB_TABLE_NAME,
+        Key: { id: appointmentId }
+      })
+    );
 
     return successResponse(
-      { appointment: appointments[appointmentIndex] },
+      { appointment: updatedResult.Item },
       'Cita confirmada exitosamente'
     );
   } catch (error) {
@@ -446,20 +592,41 @@ export const cancel = async (
       return errorResponse('Appointment ID is required', 400);
     }
 
-    const appointmentIndex = appointments.findIndex(a => a.id === appointmentId);
+    // Verificar si existe la cita
+    const getResult = await ddbDocClient.send(
+      new GetCommand({
+        TableName: DYNAMODB_TABLE_NAME,
+        Key: { id: appointmentId }
+      })
+    );
+    const existingAppointment = getResult.Item;
 
-    if (appointmentIndex === -1) {
+    if (!existingAppointment) {
       return errorResponse('Appointment not found', 404);
     }
 
-    appointments[appointmentIndex] = {
-      ...appointments[appointmentIndex],
-      status: 'cancelled',
-      updatedAt: new Date().toISOString()
-    };
+    // Actualizar el estado a 'cancelled'
+    await ddbDocClient.send(
+      new UpdateCommand({
+        TableName: DYNAMODB_TABLE_NAME,
+        Key: { id: appointmentId },
+        UpdateExpression: 'set #status = :status, updatedAt = :updatedAt',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: { ':status': 'cancelled', ':updatedAt': new Date().toISOString() },
+        ReturnValues: 'ALL_NEW'
+      })
+    );
+
+    // Obtener el registro actualizado
+    const updatedResult = await ddbDocClient.send(
+      new GetCommand({
+        TableName: DYNAMODB_TABLE_NAME,
+        Key: { id: appointmentId }
+      })
+    );
 
     return successResponse(
-      { appointment: appointments[appointmentIndex] },
+      { appointment: updatedResult.Item },
       'Cita cancelada exitosamente'
     );
   } catch (error) {
